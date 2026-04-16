@@ -1,0 +1,812 @@
+{
+  "name": "ResultAnalyser",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {
+          "readStatus": "unread",
+          "q": "has:attachment filename:pdf"
+        },
+        "options": {
+          "downloadAttachments": true,
+          "attachmentsPrefix": "attachment_"
+        }
+      },
+      "id": "n1",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1,
+      "position": [
+        260,
+        60
+      ],
+      "notes": "Email yourself the AU result PDF. Subject = your command.\nExamples:\n  do result analysis       \u2192 all 5 PDFs\n  arrear analysis          \u2192 arrear PDF only\n  sem 3 arrear analysis    \u2192 sem 3 arrear PDF\n  sem 5 full analysis      \u2192 all 5 PDFs sem 5 only\n  statistics               \u2192 stats PDF only\n  score card               \u2192 rank list only\n  subject wise             \u2192 subject arrear PDF\n  insights                 \u2192 AI insights only"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\nconst attachments = item.json.attachments || [];\nconst pdf = attachments.find(a =>\n  a.mimeType === 'application/pdf' ||\n  (a.name || '').toLowerCase().endsWith('.pdf')\n);\nif (!pdf) throw new Error('No PDF attachment found. Please attach an AU result PDF.');\nreturn [{\n  json: {\n    threadId:     item.json.threadId,\n    messageId:    item.json.id,\n    senderEmail:  item.json.from,\n    senderName:  (item.json.from || '').split('<')[0].trim() || 'Faculty',\n    emailSubject: (item.json.subject || '').toLowerCase().trim(),\n    emailBody:    (item.json.text || '').toLowerCase().trim(),\n    attachmentName: pdf.name || 'result.pdf',\n  },\n  binary: { pdf: item.binary['attachment_0'] }\n}];"
+      },
+      "id": "n2",
+      "name": "Extract PDF Attachment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "command": "python3 -c \"\nimport pdfplumber, base64, json\npdf_bytes = base64.b64decode('{{ $binary.pdf.data }}')\nwith open('/tmp/result.pdf','wb') as f: f.write(pdf_bytes)\ntext = ''\nwith pdfplumber.open('/tmp/result.pdf') as pdf:\n    for page in pdf.pages:\n        t = page.extract_text()\n        if t: text += t + chr(10)\nprint(json.dumps({'text': text}))\n\""
+      },
+      "id": "n3",
+      "name": "pdfplumber \u2014 Read PDF Text",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        260,
+        300
+      ],
+      "notes": "SETUP: pip install pdfplumber on your n8n server"
+    },
+    {
+      "parameters": {
+        "jsCode": "const txt  = JSON.parse($input.first().json.stdout);\nconst meta = $('Extract PDF Attachment').first().json;\nreturn [{ json: { ...meta, pdfText: txt.text } }];"
+      },
+      "id": "n4",
+      "name": "Merge Text + Email Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={{ $env.GEMINI_API_KEY }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"contents\": [{\n    \"parts\": [{\n      \"text\": \"Parse this university result PDF text carefully.\\n\\nReturn ONLY valid JSON \u2014 no markdown, no explanation, no preamble:\\n{\\n  \\\"institution\\\": {\\n    \\\"examBody\\\": \\\"exact exam body line from PDF\\\",\\n    \\\"officeLabel\\\": \\\"exact office label from PDF\\\",\\n    \\\"examSession\\\": \\\"exact exam session line from PDF\\\",\\n    \\\"instCode\\\": \\\"institution code from PDF\\\",\\n    \\\"instName\\\": \\\"full institution name from PDF\\\",\\n    \\\"instAddress\\\": \\\"address from PDF if present else empty string\\\",\\n    \\\"branch\\\": \\\"full branch name from PDF\\\",\\n    \\\"regulation\\\": \\\"regulation year from PDF\\\",\\n    \\\"datePublication\\\": \\\"date of publication from PDF\\\"\\n  },\\n  \\\"students\\\": [\\n    {\\n      \\\"regNo\\\": \\\"string\\\",\\n      \\\"name\\\": \\\"string\\\",\\n      \\\"semester\\\": number,\\n      \\\"grades\\\": {\\\"subjectCode\\\": \\\"grade\\\"}\\n    }\\n  ]\\n}\\n\\nGrade values allowed: O A+ A B+ B C U UA SA RA W\\nExtract ALL students from ALL semesters shown.\\nExtract institution info ONLY from the PDF \u2014 do not guess or fill in anything.\\n\\nPDF Text:\\n{{ $json.pdfText }}\"\n    }]\n  }],\n  \"generationConfig\": {\n    \"temperature\": 0.1,\n    \"maxOutputTokens\": 8192,\n    \"responseMimeType\": \"application/json\"\n  }\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "n5",
+      "name": "Gemini \u2014 Parse PDF to JSON",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        260,
+        540
+      ],
+      "notes": "SETUP: Get free Gemini API key at https://aistudio.google.com/app/apikey\nSet GEMINI_API_KEY in n8n Settings > Environment Variables\nFree tier: 1500 requests/day"
+    },
+    {
+      "parameters": {
+        "jsCode": "const meta = $('Merge Text + Email Metadata').first().json;\nconst raw  = $input.first().json;\n\nconst text = (meta.emailSubject + ' ' + meta.emailBody).toLowerCase();\n\n// \u2500\u2500 Semester detection \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nconst semMatch =\n  text.match(/\\bsem(?:ester)?\\s*(\\d)\\b/) ||\n  text.match(/\\b(\\d)(?:st|nd|rd|th)?\\s*sem(?:ester)?\\b/) ||\n  text.match(/\\bs(\\d)\\b/);\nconst targetSem = semMatch ? parseInt(semMatch[1]) : null;\n\n// \u2500\u2500 Intent detection \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nlet intent = 'ALL';\nconst rules = [\n  { keys: ['score card','scorecard','rank list','marks','rank list'], intent: 'SCORECARD' },\n  { keys: ['subject wise','subject-wise','subjectwise','per subject'], intent: 'SUBJECT' },\n  { keys: ['statistics','stats','pass fail','pass percentage','ratio','grade distribution'], intent: 'STATS' },\n  { keys: ['insight','recommend','ai analysis','performance report','suggestions'], intent: 'INSIGHTS' },\n  { keys: ['arrear','backlog','failed','who failed','reappear','outstanding'], intent: 'ARREAR' },\n  { keys: ['full analysis','all report','all pdf','complete analysis','do result analysis',\n           'analyse this','analyze this','result analysis','full report'], intent: 'ALL' },\n];\nfor (const rule of rules) {\n  if (rule.keys.some(k => text.includes(k))) { intent = rule.intent; break; }\n}\n\nconst PDF_MAP = {\n  ALL:       [1,2,3,4,5],\n  SCORECARD: [1],\n  ARREAR:    [2],\n  SUBJECT:   [3],\n  STATS:     [4],\n  INSIGHTS:  [5],\n};\nconst pdfsToRun   = PDF_MAP[intent] || [1,2,3,4,5];\nconst needsInsight = pdfsToRun.includes(5);\n\n// \u2500\u2500 Parse Gemini response \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nlet txt = raw.candidates[0].content.parts[0].text\n  .replace(/```json/gi,'').replace(/```/g,'').trim();\nconst parsed = JSON.parse(txt);\nconst INST = parsed.institution;\nconst allStudents = parsed.students || [];\n\nreturn [{ json: {\n  ...meta,\n  INST,\n  allStudents,\n  intent,\n  targetSem,\n  pdfsToRun,\n  needsInsight,\n  semLabel: targetSem ? `Semester ${targetSem}` : 'All Semesters',\n} }];"
+      },
+      "id": "n6",
+      "name": "Detect Intent + Semester",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\n\nconst GP = {\n  'O':10,'A+':9,'A':8,'B+':7,'B':6,'C':5,\n  'U':0,'UA':0,'SA':0,'RA':0,'W':0\n};\nconst SUBJECTS = {\n  'AL3501':['Foundations of Artificial Intelligence',4,'Theory'],\n  'AL3502':['Machine Learning Techniques',4,'Theory'],\n  'CB3491':['Cryptography and Blockchain Technology',3,'Elective'],\n  'CCS375':['Natural Language Processing',3,'Prof. Elective III'],\n  'CCW331':['Competitive Coding Workshop',2,'Workshop/Lab'],\n  'CS3551':['Distributed Computing',4,'Theory'],\n  'MX3084':['Open Elective III',3,'Open Elective'],\n  'NM1120':['Non-Major Elective II',2,'Non-Major'],\n};\nconst GRADE_LABELS = {\n  'O':  ['Outstanding','91-100','Pass'],\n  'A+': ['Excellent','81-90','Pass'],\n  'A':  ['Very Good','71-80','Pass'],\n  'B+': ['Good','61-70','Pass'],\n  'B':  ['Average','51-60','Pass'],\n  'C':  ['Satisfactory','50','Pass'],\n  'U':  ['Reappear','<50','Fail'],\n  'SA': ['Shortage Attend.','-','Fail'],\n  'UA': ['Absent','-','Fail'],\n};\n\n// Apply semester filter\nconst filtered = d.targetSem\n  ? d.allStudents.filter(s => s.semester === d.targetSem)\n  : d.allStudents;\n\nif (filtered.length === 0) {\n  const available = [...new Set(d.allStudents.map(s => s.semester))].sort().join(', ');\n  throw new Error(\n    `No students found for ${d.semLabel}. ` +\n    `PDF contains semesters: ${available}. ` +\n    `Please re-send with a valid semester number.`\n  );\n}\n\nconst isFail    = g => ['U','UA','SA','RA','W'].includes(g);\nconst numSubs   = s => Object.keys(s.grades || {}).length || 8;\nconst totalGP   = g => Object.values(g).reduce((s,v) => s + (GP[v]||0), 0);\nconst calcGPA   = s => Math.round(totalGP(s.grades) / numSubs(s) * 100) / 100;\nconst getArr    = g => Object.entries(g)\n  .filter(([,v]) => isFail(v))\n  .map(([code,grade]) => ({ code, grade, subjectName: SUBJECTS[code]?.[0] || code }));\n\nconst enriched = filtered.map(s => ({\n  ...s,\n  totalGP:  totalGP(s.grades),\n  gpa:      calcGPA(s),\n  arrears:  getArr(s.grades),\n  allClear: !Object.values(s.grades).some(isFail),\n})).sort((a,b) => b.gpa - a.gpa);\n\nlet rank = 1;\nenriched.forEach((s,i) => {\n  if (i > 0 && enriched[i].gpa < enriched[i-1].gpa) rank = i+1;\n  s.rank = rank;\n  s.sno  = i+1;\n});\n\nconst arrearStudents = enriched\n  .filter(s => !s.allClear)\n  .sort((a,b) => b.arrears.length - a.arrears.length);\n\nconst allCodes = [...new Set(filtered.flatMap(s => Object.keys(s.grades || {})))];\nconst subjectWiseFails = {};\nallCodes.forEach(code => {\n  const failed   = enriched.filter(s => isFail(s.grades[code]));\n  const appeared = enriched.filter(s => s.grades[code]).length;\n  subjectWiseFails[code] = {\n    subjectName: SUBJECTS[code]?.[0] || code,\n    credits:     SUBJECTS[code]?.[1] || 3,\n    type:        SUBJECTS[code]?.[2] || 'Theory',\n    appeared,\n    passed:      appeared - failed.length,\n    failedCount: failed.length,\n    passRate:    appeared > 0 ? Math.round((appeared-failed.length)/appeared*1000)/10 : 100,\n    failedStudents: failed.map(s => ({ regNo:s.regNo, name:s.name, grade:s.grades[code] })),\n  };\n});\n\nconst total    = enriched.length;\nconst allClear = enriched.filter(s => s.allClear).length;\nconst totArr   = arrearStudents.reduce((s,st) => s + st.arrears.length, 0);\nconst avgGPA   = total > 0 ? Math.round(enriched.reduce((s,st) => s+st.gpa, 0)/total*100)/100 : 0;\nconst gf = {};\nenriched.forEach(s => Object.values(s.grades).forEach(g => { gf[g]=(gf[g]||0)+1; }));\nconst worst = Object.entries(subjectWiseFails).sort((a,b) => b[1].failedCount - a[1].failedCount)[0];\n\nconst insightPrompt = d.needsInsight\n  ? `Write a formal 3-paragraph HOD report for ${d.INST.instName}.\\n` +\n    `Branch: ${d.INST.branch}, ${d.semLabel}, ${d.INST.regulation} Regulation.\\n` +\n    `Total students: ${total}, All clear: ${allClear} (${Math.round(allClear/total*100)}%).\\n` +\n    `Most failed subject: ${worst?.[0]} \u2014 ${worst?.[1]?.subjectName} (${worst?.[1]?.failedCount} failures).\\n` +\n    `Class GPA average: ${avgGPA}/10. Grade distribution: ${JSON.stringify(gf)}.\\n` +\n    `Paragraph 1: overall batch performance. Paragraph 2: critical subjects needing remedial classes. Paragraph 3: actionable recommendations.\\n` +\n    `Formal academic English only. No bullet points.`\n  : null;\n\nreturn [{ json: {\n  ...d,\n  students:        enriched,\n  arrearStudents,\n  subjectWiseFails,\n  statistics: {\n    total, allClear,\n    passPercentage: Math.round(allClear/total*1000)/10,\n    withArrears:    total - allClear,\n    totalArrearCount: totArr,\n    avgGPA,\n    maxGPA: enriched.length ? Math.max(...enriched.map(s=>s.gpa)) : 0,\n    minGPA: enriched.length ? Math.min(...enriched.map(s=>s.gpa)) : 0,\n    gradeFrequency: gf,\n  },\n  GP,\n  SUBJECTS,\n  GRADE_LABELS,\n  insightPrompt,\n} }];"
+      },
+      "id": "n7",
+      "name": "Structure Data + Semester Filter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        780
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.needsInsight }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "n8",
+      "name": "IF \u2014 Needs Insight?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        260,
+        900
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={{ $env.GEMINI_API_KEY }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"contents\": [{ \"parts\": [{ \"text\": \"{{ $json.insightPrompt }}\" }] }],\n  \"generationConfig\": { \"temperature\": 0.4, \"maxOutputTokens\": 1500 }\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "n9",
+      "name": "Gemini \u2014 Generate Insight Text",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        460,
+        980
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge insight text into main data\n// Works whether insight was generated or not\nconst d = $('Structure Data + Semester Filter').first().json;\nlet insightText = '';\ntry {\n  const ins = $input.first().json;\n  if (ins.candidates) {\n    insightText = ins.candidates[0].content.parts[0].text;\n  } else {\n    insightText = 'Insight generation skipped for this report type.';\n  }\n} catch(e) {\n  insightText = 'Insight not requested for this report type.';\n}\nreturn [{ json: { ...d, insightText } }];"
+      },
+      "id": "n10",
+      "name": "Merge Insight Into Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        1080
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.pdfsToRun.includes(1) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "n11",
+      "name": "IF \u2014 Generate PDF 1?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        60,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.pdfsToRun.includes(2) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "n12",
+      "name": "IF \u2014 Generate PDF 2?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        220,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.pdfsToRun.includes(3) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "n13",
+      "name": "IF \u2014 Generate PDF 3?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        380,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.pdfsToRun.includes(4) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "n14",
+      "name": "IF \u2014 Generate PDF 4?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        540,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.pdfsToRun.includes(5) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "n15",
+      "name": "IF \u2014 Generate PDF 5?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        700,
+        1200
+      ]
+    },
+    {
+      "parameters": {
+        "command": "python3 << 'PYEOF'\nimport json, os\nfrom reportlab.lib.pagesizes import A4, landscape\nfrom reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,\n    TableStyle, HRFlowable, KeepTogether, PageBreak)\nfrom reportlab.lib.styles import ParagraphStyle\nfrom reportlab.lib import colors\nfrom reportlab.lib.units import mm\nfrom reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT\n\nINST     = json.loads(os.environ['INST'])\nSTUDENTS = json.loads(os.environ['STUDENTS'])\nSUBJECTS = json.loads(os.environ['SUBJECTS'])\nGP       = json.loads(os.environ['GP'])\nSEM_LABEL= os.environ.get('SEM_LABEL', 'All Semesters')\nOUT      = os.environ.get('OUT', '/tmp/01_Score_Card.pdf')\n\nNAVY=colors.HexColor('#1a237e');BLUE=colors.HexColor('#283593')\nBLUE_L=colors.HexColor('#e8eaf6');GREEN_DK=colors.HexColor('#1b5e20')\nGREEN_LT=colors.HexColor('#e8f5e9');RED_DK=colors.HexColor('#b71c1c')\nRED_LT=colors.HexColor('#ffebee');AMBER=colors.HexColor('#e65100')\nGOLD=colors.HexColor('#f57f17');MGRAY=colors.HexColor('#757575')\nLGRAY=colors.HexColor('#f5f5f5');WHITE=colors.white\n\ndef ps(n,**k): return ParagraphStyle(n,**k)\ndef hx(c): return c.hexval()[2:]\ndef gcol(g):\n    if g in('O','A+','A'): return GREEN_DK\n    if g in('B+','B'): return BLUE\n    if g in('U','RA'): return RED_DK\n    if g in('SA','UA'): return AMBER\n    return MGRAY\ndef isFail(g): return g in('U','UA','SA','RA','W')\ndef total_gp(g): return sum(GP.get(v,0) for v in g.values())\ndef calc_gpa(s):\n    g=s['grades']; n=len(g) or 8\n    return round(total_gp(g)/n,2)\ndef count_arr(g): return sum(1 for v in g.values() if isFail(v))\n\ndoc=SimpleDocTemplate(OUT,pagesize=landscape(A4),\n    leftMargin=10*mm,rightMargin=10*mm,topMargin=10*mm,bottomMargin=10*mm)\nstory=[]\n\n# Dynamic header \u2014 from INST only\nstory.append(Paragraph(INST.get('examBody',''),ps('T',fontName='Helvetica-Bold',fontSize=14,textColor=NAVY,alignment=TA_CENTER,spaceAfter=2)))\nstory.append(Paragraph(INST.get('officeLabel',''),ps('S',fontName='Helvetica',fontSize=9,textColor=MGRAY,alignment=TA_CENTER,spaceAfter=2)))\nstory.append(Paragraph(INST.get('examSession',''),ps('S2',fontName='Helvetica',fontSize=8,textColor=MGRAY,alignment=TA_CENTER,spaceAfter=4)))\nstory.append(HRFlowable(width='100%',thickness=2,color=NAVY,spaceAfter=3))\nstory.append(Paragraph('RESULT ANALYSIS \u2014 SCORE CARD & RANK LIST',ps('H1',fontName='Helvetica-Bold',fontSize=12,textColor=NAVY,alignment=TA_CENTER,spaceAfter=2)))\nstory.append(Paragraph(f\"Department: {INST.get('branch','')}\",ps('H2',fontName='Helvetica-Bold',fontSize=10,textColor=BLUE,alignment=TA_CENTER,spaceAfter=2)))\nstory.append(Paragraph(\n    f\"Inst: {INST.get('instCode','')} \u2014 {INST.get('instName','')}  |  \"\n    f\"Reg: {INST.get('regulation','')}  |  \"\n    f\"Filtered: {SEM_LABEL}  |  \"\n    f\"Students: {len(STUDENTS)}  |  Date: {INST.get('datePublication','')}\",\n    ps('Sm',fontName='Helvetica',fontSize=7,textColor=MGRAY,alignment=TA_CENTER,spaceAfter=4)))\n\nbanner=f\"RANK LIST  |  {SEM_LABEL}  |  Students: {len(STUDENTS)}  |  Date: {INST.get('datePublication','')}\"\nbt=Table([[banner]],colWidths=[277*mm])\nbt.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),NAVY),('TEXTCOLOR',(0,0),(-1,-1),WHITE),\n    ('FONTNAME',(0,0),(-1,-1),'Helvetica-Bold'),('FONTSIZE',(0,0),(-1,-1),10),\n    ('ALIGN',(0,0),(-1,-1),'CENTER'),('TOPPADDING',(0,0),(-1,-1),6),('BOTTOMPADDING',(0,0),(-1,-1),6)]))\nstory.append(bt)\nstory.append(Spacer(1,6))\n\n# Grade system table\nstory.append(Paragraph(f\"Grade Point System ({INST.get('regulation','2021')} Regulation)\",\n    ps('GPH',fontName='Helvetica-Bold',fontSize=9,textColor=NAVY,spaceAfter=3)))\ngs=[[\n    Paragraph('<b>Grade</b>',ps('gh',fontName='Helvetica-Bold',fontSize=8,alignment=TA_CENTER)),\n    Paragraph('<font color=\"#1b5e20\"><b>O</b></font>',ps('go',fontName='Helvetica-Bold',fontSize=9,alignment=TA_CENTER)),\n    Paragraph('<font color=\"#1b5e20\"><b>A+</b></font>',ps('gap',fontName='Helvetica-Bold',fontSize=9,alignment=TA_CENTER)),\n    Paragraph('<font color=\"#1b5e20\"><b>A</b></font>',ps('ga',fontName='Helvetica-Bold',fontSize=9,alignment=TA_CENTER)),\n    Paragraph('<font color=\"#283593\"><b>B+</b></font>',ps('gbp',fontName='Helvetica-Bold',fontSize=9,alignment=TA_CENTER)),\n    Paragraph('<font color=\"#283593\"><b>B</b></font>',ps('gb',fontName='Helvetica-Bold',fontSize=9,alignment=TA_CENTER)),\n    Paragraph('<font color=\"#b71c1c\"><b>U/RA</b></font>',ps('gu',fontName='Helvetica-Bold',fontSize=9,alignment=TA_CENTER)),\n    Paragraph('<font color=\"#e65100\"><b>SA</b></font>',ps('gsa',fontName='Helvetica-Bold',fontSize=9,alignment=TA_CENTER))\n],\n    [Paragraph('<b>GP</b>',ps('gp',fontName='Helvetica-Bold',fontSize=8,alignment=TA_CENTER)),'10','9','8','7','6','0','0'],\n    [Paragraph('<b>Desc.</b>',ps('gd',fontName='Helvetica-Bold',fontSize=7,alignment=TA_CENTER)),'Outstanding','Excellent','Very Good','Good','Average','Fail-Exam','Fail-Attend.']\n]\ngst=Table(gs,colWidths=[22*mm]*8)\ngst.setStyle(TableStyle([\n    ('BACKGROUND',(0,0),(0,-1),BLUE_L),('BACKGROUND',(0,0),(-1,0),BLUE_L),\n    ('FONTNAME',(0,0),(-1,-1),'Helvetica'),('FONTSIZE',(0,0),(-1,-1),8),\n    ('ALIGN',(0,0),(-1,-1),'CENTER'),('VALIGN',(0,0),(-1,-1),'MIDDLE'),\n    ('GRID',(0,0),(-1,-1),0.5,colors.HexColor('#9fa8da')),('ROWHEIGHT',(0,0),(-1,-1),14),\n    ('TOPPADDING',(0,0),(-1,-1),3),('BOTTOMPADDING',(0,0),(-1,-1),3),\n    ('BACKGROUND',(1,1),(3,-1),GREEN_LT),\n    ('BACKGROUND',(4,1),(5,-1),colors.HexColor('#e3f2fd')),\n    ('BACKGROUND',(6,1),(6,-1),RED_LT),\n    ('BACKGROUND',(7,1),(7,-1),colors.HexColor('#fff3e0')),\n]))\nstory.append(gst)\nstory.append(Spacer(1,7))\n\n# Top 5\nmedals=['1st','2nd','3rd','4th','5th']\nmedal_bg=[colors.HexColor('#FFD700'),colors.HexColor('#C0C0C0'),\n          colors.HexColor('#CD7F32'),BLUE_L,BLUE_L]\ntop5=STUDENTS[:5]\nt5h=[[Paragraph(f'<b>{h}</b>',ps('t5h',fontName='Helvetica-Bold',fontSize=8,textColor=WHITE,alignment=TA_CENTER))\n      for h in ['Medal','Reg. No.','Name','Total GP','GPA','Status']]]\nfor i,s in enumerate(top5):\n    tgp=total_gp(s['grades']);gv=calc_gpa(s)\n    t5h.append([\n        Paragraph(f'<b>{medals[i]}</b>',ps('m',fontName='Helvetica-Bold',fontSize=9,\n            textColor=colors.HexColor('#5d4037') if i<=2 else NAVY,alignment=TA_CENTER)),\n        Paragraph(s['regNo'],ps('r',fontName='Helvetica',fontSize=8,alignment=TA_CENTER)),\n        Paragraph(f'<b>{s[\"name\"]}</b>',ps('n',fontName='Helvetica-Bold',fontSize=9)),\n        Paragraph(f'<b>{tgp}</b>',ps('tgp',fontName='Helvetica-Bold',fontSize=10,textColor=NAVY,alignment=TA_CENTER)),\n        Paragraph(f'<b>{gv:.2f}</b>',ps('gv',fontName='Helvetica-Bold',fontSize=10,textColor=GREEN_DK,alignment=TA_CENTER)),\n        Paragraph('<b>All Pass</b>',ps('ap',fontName='Helvetica-Bold',fontSize=9,textColor=GREEN_DK,alignment=TA_CENTER)),\n    ])\nt5t=Table(t5h,colWidths=[16*mm,32*mm,50*mm,18*mm,18*mm,22*mm])\nt5st=[('BACKGROUND',(0,0),(-1,0),NAVY),('TEXTCOLOR',(0,0),(-1,0),WHITE),\n      ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),('FONTSIZE',(0,0),(-1,0),8),\n      ('GRID',(0,0),(-1,-1),0.5,colors.HexColor('#9fa8da')),\n      ('ALIGN',(0,0),(-1,-1),'CENTER'),('ALIGN',(2,1),(2,-1),'LEFT'),\n      ('VALIGN',(0,0),(-1,-1),'MIDDLE'),('ROWHEIGHT',(0,0),(-1,-1),16),\n      ('TOPPADDING',(0,0),(-1,-1),3),('BOTTOMPADDING',(0,0),(-1,-1),3)]\nfor i in range(min(5,len(top5))): t5st.append(('BACKGROUND',(0,i+1),(-1,i+1),medal_bg[i]))\nt5t.setStyle(TableStyle(t5st))\n\nac=sum(1 for s in STUDENTS if count_arr(s['grades'])==0)\none=sum(1 for s in STUDENTS if count_arr(s['grades'])==1)\ntwo=sum(1 for s in STUDENTS if count_arr(s['grades'])==2)\nthr=sum(1 for s in STUDENTS if count_arr(s['grades'])==3)\nmor=sum(1 for s in STUDENTS if count_arr(s['grades'])>=4)\ntot=len(STUDENTS)\n\ndef gpa_range(cond):\n    vals=[calc_gpa(s) for s in STUDENTS if cond(s)]\n    return f'{min(vals):.2f}-{max(vals):.2f}' if vals else '-'\n\narr_data=[\n    [Paragraph('<b>Group</b>',ps('ah',fontName='Helvetica-Bold',fontSize=8)),\n     Paragraph('<b>Count</b>',ps('ah2',fontName='Helvetica-Bold',fontSize=8,alignment=TA_CENTER)),\n     Paragraph('<b>%</b>',ps('ah3',fontName='Helvetica-Bold',fontSize=8,alignment=TA_CENTER)),\n     Paragraph('<b>GPA Range</b>',ps('ah4',fontName='Helvetica-Bold',fontSize=8,alignment=TA_CENTER))],\n    [Paragraph('<font color=\"#1b5e20\"><b>All Pass</b></font>',ps('ab',fontName='Helvetica-Bold',fontSize=8)),\n     Paragraph(f'<font color=\"#1b5e20\"><b>{ac}</b></font>',ps('av',fontName='Helvetica-Bold',fontSize=9,alignment=TA_CENTER)),\n     f'{ac/tot*100:.1f}%',gpa_range(lambda s:count_arr(s['grades'])==0)],\n    ['1 Arrear',str(one),f'{one/tot*100:.1f}%',gpa_range(lambda s:count_arr(s['grades'])==1)],\n    ['2 Arrears',str(two),f'{two/tot*100:.1f}%',gpa_range(lambda s:count_arr(s['grades'])==2)],\n    [Paragraph('3 Arrears',ps('a3',fontName='Helvetica',fontSize=8,textColor=RED_DK)),\n     Paragraph(str(thr),ps('v3',fontName='Helvetica-Bold',fontSize=9,textColor=RED_DK,alignment=TA_CENTER)),\n     f'{thr/tot*100:.1f}%',gpa_range(lambda s:count_arr(s['grades'])==3)],\n    [Paragraph('4+ Arrears (SA)',ps('a4',fontName='Helvetica',fontSize=8,textColor=RED_DK)),\n     Paragraph(str(mor),ps('v4',fontName='Helvetica-Bold',fontSize=9,textColor=RED_DK,alignment=TA_CENTER)),\n     f'{mor/tot*100:.1f}%',gpa_range(lambda s:count_arr(s['grades'])>=4)],\n    [Paragraph('<b>Total</b>',ps('tot',fontName='Helvetica-Bold',fontSize=9,textColor=NAVY)),\n     Paragraph(f'<b>{tot}</b>',ps('tv',fontName='Helvetica-Bold',fontSize=10,textColor=NAVY,alignment=TA_CENTER)),\n     '<b>100%</b>',gpa_range(lambda s:True)],\n]\narr_t=Table(arr_data,colWidths=[44*mm,20*mm,20*mm,28*mm])\narr_t.setStyle(TableStyle([\n    ('BACKGROUND',(0,0),(-1,0),NAVY),('TEXTCOLOR',(0,0),(-1,0),WHITE),\n    ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),('FONTSIZE',(0,0),(-1,0),8),\n    ('ROWBACKGROUNDS',(0,1),(-1,-2),[WHITE,LGRAY]),\n    ('BACKGROUND',(0,1),(-1,1),GREEN_LT),('BACKGROUND',(0,-1),(-1,-1),BLUE_L),\n    ('GRID',(0,0),(-1,-1),0.5,colors.HexColor('#9fa8da')),\n    ('ALIGN',(0,0),(-1,-1),'CENTER'),('ALIGN',(0,1),(0,-1),'LEFT'),\n    ('VALIGN',(0,0),(-1,-1),'MIDDLE'),('ROWHEIGHT',(0,0),(-1,-1),16),\n    ('TOPPADDING',(0,0),(-1,-1),3),('BOTTOMPADDING',(0,0),(-1,-1),3),\n    ('LEFTPADDING',(0,1),(0,-1),5),\n]))\n\nsl=Table([[Paragraph('Top 5 Rank Holders',ps('sl',fontName='Helvetica-Bold',fontSize=10,textColor=NAVY))],[t5t]],colWidths=[160*mm])\nsr=Table([[Paragraph('Arrear Group Summary',ps('sr',fontName='Helvetica-Bold',fontSize=10,textColor=NAVY))],[arr_t]],colWidths=[115*mm])\ncombo=Table([[sl,Spacer(4,1),sr]],colWidths=[160*mm,4*mm,115*mm])\ncombo.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'TOP'),('LEFTPADDING',(0,0),(-1,-1),0),('RIGHTPADDING',(0,0),(-1,-1),0)]))\nstory.append(combo)\nstory.append(Spacer(1,7))\n\n# Full rank list\nscodes=list(dict.fromkeys([c for s in STUDENTS for c in s['grades'].keys()]))\nn_sub=len(scodes)\nstory.append(Paragraph(f'Complete Rank List \u2014 All {tot} Students | {SEM_LABEL}',\n    ps('rlh',fontName='Helvetica-Bold',fontSize=10,textColor=NAVY,spaceAfter=2)))\nstory.append(Paragraph(\n    f'GPA = Total GP \u00f7 {n_sub} subjects  |  SA = Shortage of Attendance  |  All-pass names in bold',\n    ps('note',fontName='Helvetica-Oblique',fontSize=7,textColor=MGRAY,spaceAfter=3)))\n\nbase_cw=[10*mm,9*mm,25*mm,38*mm]\nsubj_cw=[max(12*mm,180//n_sub*mm)]*n_sub\ncol_w=base_cw+subj_cw+[14*mm,12*mm,10*mm,16*mm]\n\ndef hc(t): return Paragraph(f'<b>{t}</b>',ps('hc',fontName='Helvetica-Bold',fontSize=7,alignment=TA_CENTER,textColor=WHITE))\ndef hc2(t): return Paragraph(t,ps('hc2',fontName='Helvetica-Oblique',fontSize=6,alignment=TA_CENTER,textColor=colors.HexColor('#bbdefb')))\n\nhrow1=[hc('Rank'),hc('S.No'),hc('Reg. No.'),hc('Name')]+[hc(c) for c in scodes]+[hc('Total\\nGP'),hc('GPA'),hc('Arr.'),hc('Status')]\nhrow2=[hc2('')]*4+[hc2(SUBJECTS.get(c,[c])[0][:12] if SUBJECTS.get(c) else c) for c in scodes]+[hc2(f'/{n_sub*10}'),hc2('/10.0'),hc2(''),hc2('')]\n\ndata_rows=[hrow1,hrow2]\nstatus_bgs={0:GREEN_LT,1:colors.HexColor('#fff9c4'),2:colors.HexColor('#ffe0b2'),3:RED_LT}\nrow_bgs={}\n\nfor s in STUDENTS:\n    g=s['grades'];tgp=total_gp(g);gv=calc_gpa(s);arr_cnt=count_arr(g)\n    if arr_cnt==0: st,sc,nb='All Pass',GREEN_DK,True\n    elif arr_cnt>=4: st,sc,nb=f'{arr_cnt} Arr(SA)',RED_DK,False\n    elif arr_cnt==1: st,sc,nb='1 Arrear',AMBER,False\n    else: st,sc,nb=f'{arr_cnt} Arrears',RED_DK,False\n    gv_col=GREEN_DK if arr_cnt==0 else(AMBER if arr_cnt<=2 else RED_DK)\n    row=[\n        Paragraph(str(s['rank']),ps('rc',fontName='Helvetica-Bold',fontSize=8,textColor=NAVY,alignment=TA_CENTER)),\n        Paragraph(str(s['sno']),ps('rc2',fontName='Helvetica',fontSize=7,alignment=TA_CENTER)),\n        Paragraph(s['regNo'],ps('rc3',fontName='Helvetica',fontSize=7,alignment=TA_CENTER)),\n        Paragraph(f'<b>{s[\"name\"]}</b>' if nb else s['name'],\n            ps('rc4',fontName='Helvetica-Bold' if nb else 'Helvetica',fontSize=8,leftIndent=2)),\n    ]\n    for code in scodes:\n        grd=g.get(code,'-')\n        row.append(Paragraph(f'<font color=\"#{hx(gcol(grd))}\"><b>{grd}</b></font>',\n            ps('gc',fontName='Helvetica-Bold',fontSize=9,alignment=TA_CENTER)))\n    arr_col=GREEN_DK if arr_cnt==0 else RED_DK\n    row+=[\n        Paragraph(f'<b>{tgp}</b>',ps('tgp',fontName='Helvetica-Bold',fontSize=9,textColor=NAVY,alignment=TA_CENTER)),\n        Paragraph(f'<b>{gv:.2f}</b>',ps('gv',fontName='Helvetica-Bold',fontSize=9,textColor=gv_col,alignment=TA_CENTER)),\n        Paragraph(f'<font color=\"#{hx(arr_col)}\"><b>{arr_cnt}</b></font>',\n            ps('ac',fontName='Helvetica-Bold',fontSize=9,alignment=TA_CENTER)),\n        Paragraph(f'<font color=\"#{hx(sc)}\"><b>{st}</b></font>',\n            ps('sc2',fontName='Helvetica-Bold',fontSize=7,alignment=TA_CENTER)),\n    ]\n    ri=len(data_rows)\n    row_bgs[ri]=status_bgs.get(min(arr_cnt,3),colors.HexColor('#fff9c4'))\n    data_rows.append(row)\n\nrl_t=Table(data_rows,colWidths=col_w)\nbs=[('BACKGROUND',(0,0),(-1,0),NAVY),('BACKGROUND',(0,1),(-1,1),BLUE),\n    ('TEXTCOLOR',(0,0),(-1,1),WHITE),('FONTNAME',(0,2),(-1,-1),'Helvetica'),\n    ('FONTSIZE',(0,2),(-1,-1),8),('GRID',(0,0),(-1,-1),0.4,colors.HexColor('#9fa8da')),\n    ('ALIGN',(0,0),(-1,-1),'CENTER'),('VALIGN',(0,0),(-1,-1),'MIDDLE'),\n    ('TOPPADDING',(0,0),(-1,-1),3),('BOTTOMPADDING',(0,0),(-1,-1),3),\n    ('ROWHEIGHT',(0,0),(1,-1),18),\n    ('LINEBELOW',(0,1),(-1,1),1.5,GOLD),\n    ('LINEAFTER',(3,0),(3,-1),1.2,colors.HexColor('#5c6bc0')),\n    ('LINEAFTER',(3+n_sub,0),(3+n_sub,-1),1.2,colors.HexColor('#5c6bc0'))]\nfor ri,bg in row_bgs.items(): bs.append(('BACKGROUND',(0,ri),(-1,ri),bg))\nrl_t.setStyle(TableStyle(bs))\nstory.append(rl_t)\nstory.append(Spacer(1,8))\n\nstory.append(HRFlowable(width='100%',thickness=1,color=NAVY,spaceAfter=4))\nft=Table([[\n    Paragraph('HOD / DEPARTMENT',ps('fl',fontName='Helvetica-Bold',fontSize=10,textColor=NAVY)),\n    Paragraph(f'Generated via n8n + Gemini 2.0 Flash  |  {INST.get(\"regulation\",\"\")} Regulation  |  {SEM_LABEL}',\n        ps('fc',fontName='Helvetica-Oblique',fontSize=7,textColor=MGRAY,alignment=TA_CENTER)),\n    Paragraph('PRINCIPAL',ps('fr',fontName='Helvetica-Bold',fontSize=10,textColor=NAVY,alignment=TA_RIGHT)),\n]],colWidths=[70*mm,137*mm,70*mm])\nft.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'MIDDLE'),('LEFTPADDING',(0,0),(-1,-1),0),('RIGHTPADDING',(0,0),(-1,-1),0)]))\nstory.append(ft)\ndoc.build(story)\nprint(json.dumps({'status':'ok','file':OUT}))\nPYEOF",
+        "env": {
+          "INST": "={{ JSON.stringify($json.INST) }}",
+          "STUDENTS": "={{ JSON.stringify($json.students) }}",
+          "SUBJECTS": "={{ JSON.stringify($json.SUBJECTS) }}",
+          "GP": "={{ JSON.stringify($json.GP) }}",
+          "SEM_LABEL": "={{ $json.semLabel }}",
+          "OUT": "/tmp/01_Score_Card.pdf"
+        }
+      },
+      "id": "n16",
+      "name": "PDF 1 \u2014 Score Card + Rank List",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        60,
+        1320
+      ],
+      "notes": "Landscape A4. Dynamic header from PDF via Gemini. No hardcoded college name."
+    },
+    {
+      "parameters": {
+        "command": "python3 << 'PYEOF'\nimport json, os\nfrom reportlab.lib.pagesizes import A4\nfrom reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable\nfrom reportlab.lib.styles import ParagraphStyle\nfrom reportlab.lib import colors\nfrom reportlab.lib.units import mm\nfrom reportlab.lib.enums import TA_CENTER\n\nINST=json.loads(os.environ['INST'])\nDATA=json.loads(os.environ['ARREAR_STUDENTS'])\nSTATS=json.loads(os.environ['STATS'])\nSUBJECTS=json.loads(os.environ['SUBJECTS'])\nSEM_LABEL=os.environ.get('SEM_LABEL','All Semesters')\nOUT=os.environ.get('OUT','/tmp/02_Arrear_Analysis.pdf')\n\nNAVY=colors.HexColor('#1a237e');AU_L=colors.HexColor('#e8eaf6');AU_B=colors.HexColor('#9fa8da')\nGREEN=colors.HexColor('#1b5e20');RED=colors.HexColor('#b71c1c');MGRAY=colors.HexColor('#757575');WHITE=colors.white\ndef ps(n,**k): return ParagraphStyle(n,**k)\ndef hx(c): return c.hexval()[2:]\nTBL=[('BACKGROUND',(0,0),(-1,0),NAVY),('TEXTCOLOR',(0,0),(-1,0),WHITE),\n    ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),('FONTSIZE',(0,0),(-1,0),8),\n    ('FONTSIZE',(0,1),(-1,-1),8),('GRID',(0,0),(-1,-1),0.3,AU_B),\n    ('VALIGN',(0,0),(-1,-1),'MIDDLE'),('TOPPADDING',(0,0),(-1,-1),4),('BOTTOMPADDING',(0,0),(-1,-1),4)]\n\ndoc=SimpleDocTemplate(OUT,pagesize=A4,leftMargin=12*mm,rightMargin=12*mm,topMargin=12*mm,bottomMargin=12*mm)\nstory=[]\nstory.append(Paragraph(INST.get('examBody',''),ps('T',fontName='Helvetica-Bold',fontSize=14,textColor=NAVY,alignment=TA_CENTER,spaceAfter=2)))\nstory.append(Paragraph(INST.get('officeLabel',''),ps('S',fontName='Helvetica',fontSize=9,textColor=MGRAY,alignment=TA_CENTER,spaceAfter=2)))\nstory.append(HRFlowable(width='100%',thickness=2,color=NAVY,spaceAfter=4))\nstory.append(Paragraph('ARREAR ANALYSIS REPORT',ps('MT',fontName='Helvetica-Bold',fontSize=13,textColor=NAVY,alignment=TA_CENTER,spaceAfter=2)))\nstory.append(Paragraph(\n    f\"{INST.get('instCode','')} \u2014 {INST.get('instName','')}  |  {INST.get('branch','')}  |  {SEM_LABEL}\",\n    ps('Sm',fontName='Helvetica',fontSize=7,textColor=MGRAY,alignment=TA_CENTER,spaceAfter=5)))\n\ntot=STATS['total']\nstory.append(Paragraph('Summary Statistics',ps('H1',fontName='Helvetica-Bold',fontSize=11,textColor=NAVY,spaceBefore=6,spaceAfter=4)))\nsd=[\n    ['Total Students',str(tot),'All Clear',f\"{STATS['allClear']} ({STATS['passPercentage']}%)\"],\n    ['Students with Arrears',f\"{STATS['withArrears']}\", 'Total Arrear Subjects',str(STATS['totalArrearCount'])],\n    ['Pass Percentage',f\"{STATS['passPercentage']}%\",'Avg Arrears / Failing Student',str(STATS.get('avgArrearsPerFailStudent','-'))],\n    ['Class GPA Average',f\"{STATS['avgGPA']:.2f} / 10.00\",'Regulation',INST.get('regulation','')]\n]\nst=Table(sd,colWidths=[65*mm,30*mm,60*mm,35*mm])\nst.setStyle(TableStyle(TBL+[('ROWBACKGROUNDS',(0,0),(-1,-1),[WHITE,AU_L]),\n    ('FONTNAME',(0,0),(0,-1),'Helvetica-Bold'),('FONTNAME',(2,0),(2,-1),'Helvetica-Bold'),\n    ('ROWHEIGHT',(0,0),(-1,-1),16)]))\nstory.append(st)\nstory.append(Spacer(1,8))\n\nstory.append(Paragraph('Detailed Arrear List',ps('H2',fontName='Helvetica-Bold',fontSize=11,textColor=NAVY,spaceBefore=6,spaceAfter=4)))\nhdr=[['#','Reg. Number','Student Name','Arrear Count','Failed Subjects  (Code \u2014 Name \u2014 Grade)']]\nrows=[]\nfor i,s in enumerate(DATA,1):\n    arr=s.get('arrears',[])\n    lines=[f\"{a['code']} \u2014 {SUBJECTS.get(a['code'],[a['code']])[0]} [{a['grade']}]\" for a in arr]\n    rows.append([str(i),s['regNo'],\n        Paragraph(f'<b>{s[\"name\"]}</b>',ps('nn',fontName='Helvetica-Bold',fontSize=8)),\n        Paragraph(f'<font color=\"#{hx(RED)}\"><b>{len(arr)}</b></font>',ps('nc',fontName='Helvetica-Bold',fontSize=12,alignment=TA_CENTER)),\n        Paragraph('<br/>'.join(lines),ps('af',fontName='Helvetica',fontSize=8,leading=13))])\nt=Table(hdr+rows,colWidths=[8*mm,30*mm,44*mm,16*mm,87*mm])\nt.setStyle(TableStyle(TBL+[('ROWBACKGROUNDS',(0,1),(-1,-1),[WHITE,colors.HexColor('#fff8f8')]),\n    ('TOPPADDING',(0,1),(-1,-1),5),('BOTTOMPADDING',(0,1),(-1,-1),5)]))\nstory.append(t)\nstory.append(Spacer(1,8))\nstory.append(Paragraph('SA = Shortage of Attendance (<75%).  UA = Absent.  Both = 0 Grade Points.',\n    ps('nt',fontName='Helvetica-Oblique',fontSize=8,textColor=MGRAY)))\ndoc.build(story)\nprint(json.dumps({'status':'ok','file':OUT}))\nPYEOF",
+        "env": {
+          "INST": "={{ JSON.stringify($json.INST) }}",
+          "ARREAR_STUDENTS": "={{ JSON.stringify($json.arrearStudents) }}",
+          "STATS": "={{ JSON.stringify($json.statistics) }}",
+          "SUBJECTS": "={{ JSON.stringify($json.SUBJECTS) }}",
+          "SEM_LABEL": "={{ $json.semLabel }}",
+          "OUT": "/tmp/02_Arrear_Analysis.pdf"
+        }
+      },
+      "id": "n17",
+      "name": "PDF 2 \u2014 Arrear Analysis",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        220,
+        1320
+      ]
+    },
+    {
+      "parameters": {
+        "command": "python3 << 'PYEOF'\nimport json, os\nfrom reportlab.lib.pagesizes import A4\nfrom reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable\nfrom reportlab.lib.styles import ParagraphStyle\nfrom reportlab.lib import colors\nfrom reportlab.lib.units import mm\nfrom reportlab.lib.enums import TA_CENTER\n\nINST=json.loads(os.environ['INST'])\nSWF=json.loads(os.environ['SWF'])\nSEM_LABEL=os.environ.get('SEM_LABEL','All Semesters')\nOUT=os.environ.get('OUT','/tmp/03_SubjectWise.pdf')\n\nNAVY=colors.HexColor('#1a237e');AU_L=colors.HexColor('#e8eaf6');AU_B=colors.HexColor('#9fa8da')\nGREEN=colors.HexColor('#1b5e20');RED=colors.HexColor('#b71c1c');AMBER=colors.HexColor('#e65100')\nMGRAY=colors.HexColor('#757575');WHITE=colors.white\ndef ps(n,**k): return ParagraphStyle(n,**k)\ndef hx(c): return c.hexval()[2:]\nTBL=[('BACKGROUND',(0,0),(-1,0),NAVY),('TEXTCOLOR',(0,0),(-1,0),WHITE),\n    ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),('FONTSIZE',(0,0),(-1,0),8),\n    ('FONTSIZE',(0,1),(-1,-1),8),('GRID',(0,0),(-1,-1),0.3,AU_B),\n    ('VALIGN',(0,0),(-1,-1),'MIDDLE'),('TOPPADDING',(0,0),(-1,-1),4),('BOTTOMPADDING',(0,0),(-1,-1),4)]\n\ndoc=SimpleDocTemplate(OUT,pagesize=A4,leftMargin=12*mm,rightMargin=12*mm,topMargin=12*mm,bottomMargin=12*mm)\nstory=[]\nstory.append(Paragraph(INST.get('examBody',''),ps('T',fontName='Helvetica-Bold',fontSize=14,textColor=NAVY,alignment=TA_CENTER,spaceAfter=2)))\nstory.append(Paragraph(INST.get('officeLabel',''),ps('S',fontName='Helvetica',fontSize=9,textColor=MGRAY,alignment=TA_CENTER,spaceAfter=2)))\nstory.append(HRFlowable(width='100%',thickness=2,color=NAVY,spaceAfter=4))\nstory.append(Paragraph('SUBJECT-WISE ARREAR REPORT',ps('MT',fontName='Helvetica-Bold',fontSize=13,textColor=NAVY,alignment=TA_CENTER,spaceAfter=2)))\nstory.append(Paragraph(\n    f\"{INST.get('instCode','')} \u2014 {INST.get('instName','')}  |  {INST.get('branch','')}  |  {SEM_LABEL}\",\n    ps('Sm',fontName='Helvetica',fontSize=7,textColor=MGRAY,alignment=TA_CENTER,spaceAfter=5)))\n\nfor code,info in SWF.items():\n    pct=info['passRate'];pc=GREEN if pct>=85 else(AMBER if pct>=65 else RED)\n    story.append(Paragraph(f\"{code} \u2014 {info['subjectName']}\",\n        ps('sh',fontName='Helvetica-Bold',fontSize=11,textColor=NAVY,spaceBefore=10,spaceAfter=2)))\n    mt=Table([[f\"Type: {info['type']}\",f\"Credits: {info['credits']}\",\n        f\"Appeared: {info['appeared']}\",f\"Passed: {info['passed']}\",f\"Failed: {info['failedCount']}\",\n        Paragraph(f'<font color=\"#{hx(pc)}\"><b>Pass Rate: {pct}%</b></font>',ps('pr',fontName='Helvetica-Bold',fontSize=9))]],\n        colWidths=[34*mm,20*mm,22*mm,20*mm,18*mm,58*mm])\n    mt.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),AU_L),('FONTSIZE',(0,0),(-1,-1),8),\n        ('FONTNAME',(0,0),(-1,-1),'Helvetica'),('GRID',(0,0),(-1,-1),0.3,AU_B),\n        ('VALIGN',(0,0),(-1,-1),'MIDDLE'),('ROWHEIGHT',(0,0),(-1,-1),15),\n        ('TOPPADDING',(0,0),(-1,-1),3),('BOTTOMPADDING',(0,0),(-1,-1),3)]))\n    story.append(mt)\n    fails=info['failedStudents']\n    if not fails:\n        story.append(Paragraph('All students cleared this subject.',\n            ps('ok',fontName='Helvetica-Bold',fontSize=9,textColor=GREEN,spaceBefore=3,spaceAfter=6)))\n    else:\n        fh=[['#','Reg. Number','Student Name','Grade','Reason']]\n        fr=[[str(i+1),s['regNo'],\n            Paragraph(f'<b>{s[\"name\"]}</b>',ps('fn',fontName='Helvetica-Bold',fontSize=8)),\n            Paragraph(f'<font color=\"#{hx(RED)}\"><b>{s[\"grade\"]}</b></font>',ps('fg',fontName='Helvetica-Bold',fontSize=10,alignment=TA_CENTER)),\n            'Shortage of Attendance' if s['grade'] in('SA','UA') else 'Below Passing Marks (<50)']\n            for i,s in enumerate(fails)]\n        ft=Table(fh+fr,colWidths=[8*mm,30*mm,70*mm,16*mm,58*mm])\n        ft.setStyle(TableStyle(TBL+[('BACKGROUND',(0,0),(-1,0),RED),\n            ('ROWBACKGROUNDS',(0,1),(-1,-1),[WHITE,colors.HexColor('#fff8f8')]),\n            ('ROWHEIGHT',(0,0),(-1,-1),15)]))\n        story.append(ft)\n    story.append(HRFlowable(width='100%',thickness=0.4,color=AU_B,spaceBefore=5,spaceAfter=2))\ndoc.build(story)\nprint(json.dumps({'status':'ok','file':OUT}))\nPYEOF",
+        "env": {
+          "INST": "={{ JSON.stringify($json.INST) }}",
+          "SWF": "={{ JSON.stringify($json.subjectWiseFails) }}",
+          "SEM_LABEL": "={{ $json.semLabel }}",
+          "OUT": "/tmp/03_SubjectWise.pdf"
+        }
+      },
+      "id": "n18",
+      "name": "PDF 3 \u2014 Subject-wise Arrear",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        380,
+        1320
+      ]
+    },
+    {
+      "parameters": {
+        "command": "python3 << 'PYEOF'\nimport json, os\nfrom reportlab.lib.pagesizes import A4\nfrom reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable\nfrom reportlab.lib.styles import ParagraphStyle\nfrom reportlab.lib import colors\nfrom reportlab.lib.units import mm\nfrom reportlab.lib.enums import TA_CENTER\n\nINST=json.loads(os.environ['INST'])\nSTUDENTS=json.loads(os.environ['STUDENTS'])\nSTATS=json.loads(os.environ['STATS'])\nSWF=json.loads(os.environ['SWF'])\nGP=json.loads(os.environ['GP'])\nGL=json.loads(os.environ['GL'])\nSEM_LABEL=os.environ.get('SEM_LABEL','All Semesters')\nOUT=os.environ.get('OUT','/tmp/04_Statistics.pdf')\n\nNAVY=colors.HexColor('#1a237e');AU_L=colors.HexColor('#e8eaf6');AU_B=colors.HexColor('#9fa8da')\nGREEN=colors.HexColor('#1b5e20');RED=colors.HexColor('#b71c1c');AMBER=colors.HexColor('#e65100')\nMGRAY=colors.HexColor('#757575');WHITE=colors.white\ndef ps(n,**k): return ParagraphStyle(n,**k)\ndef hx(c): return c.hexval()[2:]\ndef gcol(g):\n    if g in('O','A+','A'): return GREEN\n    if g in('B+','B'): return colors.HexColor('#283593')\n    return RED\nTBL=[('BACKGROUND',(0,0),(-1,0),NAVY),('TEXTCOLOR',(0,0),(-1,0),WHITE),\n    ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),('FONTSIZE',(0,0),(-1,0),8),\n    ('FONTSIZE',(0,1),(-1,-1),8),('GRID',(0,0),(-1,-1),0.3,AU_B),\n    ('VALIGN',(0,0),(-1,-1),'MIDDLE'),('TOPPADDING',(0,0),(-1,-1),4),('BOTTOMPADDING',(0,0),(-1,-1),4)]\n\ndoc=SimpleDocTemplate(OUT,pagesize=A4,leftMargin=12*mm,rightMargin=12*mm,topMargin=12*mm,bottomMargin=12*mm)\nstory=[]\nstory.append(Paragraph(INST.get('examBody',''),ps('T',fontName='Helvetica-Bold',fontSize=14,textColor=NAVY,alignment=TA_CENTER,spaceAfter=2)))\nstory.append(Paragraph(INST.get('officeLabel',''),ps('S',fontName='Helvetica',fontSize=9,textColor=MGRAY,alignment=TA_CENTER,spaceAfter=2)))\nstory.append(HRFlowable(width='100%',thickness=2,color=NAVY,spaceAfter=4))\nstory.append(Paragraph('OVERALL STATISTICS \u2014 PASS / FAIL ANALYSIS',ps('MT',fontName='Helvetica-Bold',fontSize=13,textColor=NAVY,alignment=TA_CENTER,spaceAfter=2)))\nstory.append(Paragraph(\n    f\"{INST.get('instCode','')} \u2014 {INST.get('instName','')}  |  {INST.get('branch','')}  |  {SEM_LABEL}\",\n    ps('Sm',fontName='Helvetica',fontSize=7,textColor=MGRAY,alignment=TA_CENTER,spaceAfter=5)))\n\nstory.append(Paragraph('Class Overview',ps('H1',fontName='Helvetica-Bold',fontSize=11,textColor=NAVY,spaceBefore=6,spaceAfter=4)))\ntot=STATS['total']\nod=[\n    ['Institution',f\"{INST.get('instCode','')} \u2014 {INST.get('instName','')}\", 'Regulation',INST.get('regulation','')],\n    ['Total Students',str(tot),'Class GPA Average',f\"{STATS['avgGPA']:.2f} / 10.00\"],\n    ['All Clear',f\"{STATS['allClear']} ({STATS['passPercentage']}%)\",'Highest GPA',str(STATS['maxGPA'])],\n    ['With Arrears',f\"{STATS['withArrears']} ({round(STATS['withArrears']/tot*100,1)}%)\",'Lowest GPA',str(STATS['minGPA'])],\n    ['Total Arrear Count',str(STATS['totalArrearCount']),'Semester Filter',SEM_LABEL]\n]\not2=Table(od,colWidths=[50*mm,55*mm,45*mm,40*mm])\not2.setStyle(TableStyle(TBL+[('ROWBACKGROUNDS',(0,1),(-1,-1),[WHITE,AU_L]),\n    ('FONTNAME',(0,0),(0,-1),'Helvetica-Bold'),('FONTNAME',(2,0),(2,-1),'Helvetica-Bold'),\n    ('ROWHEIGHT',(0,0),(-1,-1),16)]))\nstory.append(ot2)\nstory.append(Spacer(1,10))\n\nstory.append(Paragraph('Subject-wise Pass / Fail Statistics',ps('H2',fontName='Helvetica-Bold',fontSize=11,textColor=NAVY,spaceBefore=6,spaceAfter=4)))\nsh=[['Code','Subject Name','Credits','Type','Appeared','Passed','Failed','Pass %','Verdict']]\nfor code,info in SWF.items():\n    pct=info['passRate']\n    v='Excellent' if pct==100 else('Good' if pct>=85 else('Average' if pct>=70 else 'Poor'))\n    vc=GREEN if pct>=85 else(AMBER if pct>=65 else RED)\n    sh.append([\n        Paragraph(f'<b>{code}</b>',ps('c',fontName='Helvetica-Bold',fontSize=8)),\n        Paragraph(info['subjectName'],ps('n',fontName='Helvetica',fontSize=8)),\n        str(info['credits']),info['type'],str(info['appeared']),\n        Paragraph(f'<font color=\"#{hx(GREEN)}\"><b>{info[\"passed\"]}</b></font>',ps('p',fontName='Helvetica-Bold',fontSize=9,alignment=TA_CENTER)),\n        Paragraph(f'<font color=\"#{hx(RED if info[\"failedCount\"]>0 else GREEN)}\"><b>{info[\"failedCount\"]}</b></font>',ps('f',fontName='Helvetica-Bold',fontSize=9,alignment=TA_CENTER)),\n        Paragraph(f'<font color=\"#{hx(vc)}\"><b>{pct}%</b></font>',ps('pc',fontName='Helvetica-Bold',fontSize=9,alignment=TA_CENTER)),\n        Paragraph(f'<font color=\"#{hx(vc)}\"><b>{v}</b></font>',ps('ve',fontName='Helvetica-Bold',fontSize=8,alignment=TA_CENTER))\n    ])\nst3=Table(sh,colWidths=[20*mm,60*mm,13*mm,26*mm,14*mm,14*mm,12*mm,14*mm,21*mm])\nst3.setStyle(TableStyle(TBL+[('ROWBACKGROUNDS',(0,1),(-1,-1),[WHITE,AU_L]),\n    ('ROWHEIGHT',(0,0),(-1,-1),18),('TOPPADDING',(0,1),(-1,-1),4),('BOTTOMPADDING',(0,1),(-1,-1),4)]))\nstory.append(st3)\nstory.append(Spacer(1,10))\n\nstory.append(Paragraph('Grade Frequency Distribution',ps('H3',fontName='Helvetica-Bold',fontSize=11,textColor=NAVY,spaceBefore=6,spaceAfter=4)))\ngf=STATS.get('gradeFrequency',{});total_g=sum(gf.values()) or 1\ngh=[['Grade','Description','Grade Points','Count','Percentage']]\nfor grd in['O','A+','A','B+','B','C','U','UA','SA']:\n    cnt=gf.get(grd,0);pct2=round(cnt/total_g*100,1)\n    desc=GL.get(grd,['','',''])[0]\n    gc=gcol(grd)\n    gh.append([\n        Paragraph(f'<font color=\"#{hx(gc)}\"><b>{grd}</b></font>',ps('gg',fontName='Helvetica-Bold',fontSize=11,alignment=TA_CENTER)),\n        desc,str(GP.get(grd,0)),\n        Paragraph(f'<b>{cnt}</b>',ps('gc2',fontName='Helvetica-Bold',fontSize=10,alignment=TA_CENTER)),\n        Paragraph(f'{pct2}%',ps('gp2',fontName='Helvetica',fontSize=9,alignment=TA_CENTER))\n    ])\ngt=Table(gh,colWidths=[18*mm,55*mm,28*mm,25*mm,60*mm])\ngt.setStyle(TableStyle(TBL+[('ROWBACKGROUNDS',(0,1),(-1,-1),[WHITE,AU_L]),('ROWHEIGHT',(0,0),(-1,-1),16)]))\nstory.append(gt)\ndoc.build(story)\nprint(json.dumps({'status':'ok','file':OUT}))\nPYEOF",
+        "env": {
+          "INST": "={{ JSON.stringify($json.INST) }}",
+          "STUDENTS": "={{ JSON.stringify($json.students) }}",
+          "STATS": "={{ JSON.stringify($json.statistics) }}",
+          "SWF": "={{ JSON.stringify($json.subjectWiseFails) }}",
+          "GP": "={{ JSON.stringify($json.GP) }}",
+          "GL": "={{ JSON.stringify($json.GRADE_LABELS) }}",
+          "SEM_LABEL": "={{ $json.semLabel }}",
+          "OUT": "/tmp/04_Statistics.pdf"
+        }
+      },
+      "id": "n19",
+      "name": "PDF 4 \u2014 Statistics",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        540,
+        1320
+      ]
+    },
+    {
+      "parameters": {
+        "command": "python3 << 'PYEOF'\nimport json, os\nfrom reportlab.lib.pagesizes import A4\nfrom reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable\nfrom reportlab.lib.styles import ParagraphStyle\nfrom reportlab.lib import colors\nfrom reportlab.lib.units import mm\nfrom reportlab.lib.enums import TA_CENTER\n\nINST=json.loads(os.environ['INST'])\nSTUDENTS=json.loads(os.environ['STUDENTS'])\nARR=json.loads(os.environ['ARR'])\nSTATS=json.loads(os.environ['STATS'])\nINSIGHT=os.environ.get('INSIGHT','No insight available.')\nSEM_LABEL=os.environ.get('SEM_LABEL','All Semesters')\nOUT=os.environ.get('OUT','/tmp/05_Insights.pdf')\n\nNAVY=colors.HexColor('#1a237e');AU_L=colors.HexColor('#e8eaf6');AU_B=colors.HexColor('#9fa8da')\nGREEN=colors.HexColor('#1b5e20');RED=colors.HexColor('#b71c1c');AMBER=colors.HexColor('#e65100')\nMGRAY=colors.HexColor('#757575');WHITE=colors.white\ndef ps(n,**k): return ParagraphStyle(n,**k)\ndef hx(c): return c.hexval()[2:]\nTBL=[('BACKGROUND',(0,0),(-1,0),NAVY),('TEXTCOLOR',(0,0),(-1,0),WHITE),\n    ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),('FONTSIZE',(0,0),(-1,0),8),\n    ('FONTSIZE',(0,1),(-1,-1),8),('GRID',(0,0),(-1,-1),0.3,AU_B),\n    ('VALIGN',(0,0),(-1,-1),'MIDDLE'),('TOPPADDING',(0,0),(-1,-1),4),('BOTTOMPADDING',(0,0),(-1,-1),4)]\n\ndoc=SimpleDocTemplate(OUT,pagesize=A4,leftMargin=12*mm,rightMargin=12*mm,topMargin=12*mm,bottomMargin=12*mm)\nstory=[]\nstory.append(Paragraph(INST.get('examBody',''),ps('T',fontName='Helvetica-Bold',fontSize=14,textColor=NAVY,alignment=TA_CENTER,spaceAfter=2)))\nstory.append(Paragraph(INST.get('officeLabel',''),ps('S',fontName='Helvetica',fontSize=9,textColor=MGRAY,alignment=TA_CENTER,spaceAfter=2)))\nstory.append(HRFlowable(width='100%',thickness=2,color=NAVY,spaceAfter=4))\nstory.append(Paragraph('AI-GENERATED INSIGHTS & RECOMMENDATIONS',ps('MT',fontName='Helvetica-Bold',fontSize=13,textColor=NAVY,alignment=TA_CENTER,spaceAfter=2)))\nstory.append(Paragraph(\n    f\"{INST.get('instCode','')} \u2014 {INST.get('instName','')}  |  {INST.get('branch','')}  |  {SEM_LABEL}\",\n    ps('Sm',fontName='Helvetica',fontSize=7,textColor=MGRAY,alignment=TA_CENTER,spaceAfter=5)))\n\nbody=ps('B',fontName='Helvetica',fontSize=9,textColor=colors.HexColor('#424242'),leading=14,spaceAfter=6)\nstory.append(Paragraph('1. Gemini 2.0 Flash \u2014 Academic Performance Analysis',\n    ps('H1',fontName='Helvetica-Bold',fontSize=11,textColor=NAVY,spaceBefore=6,spaceAfter=5)))\nfor para in INSIGHT.split('\\n\\n'):\n    if para.strip(): story.append(Paragraph(para.strip(),body))\nstory.append(Spacer(1,8))\n\nstory.append(Paragraph('2. Top Performers',ps('H2',fontName='Helvetica-Bold',fontSize=11,textColor=NAVY,spaceBefore=6,spaceAfter=5)))\nac=[s for s in STUDENTS if s.get('allClear')]\nth=[['Rank','Reg. Number','Student Name','GPA','Status']]\nfor i,s in enumerate(ac[:5],1):\n    th.append([str(i),s['regNo'],\n        Paragraph(f'<b>{s[\"name\"]}</b>',ps('tn',fontName='Helvetica-Bold',fontSize=9)),\n        Paragraph(f'<b>{s[\"gpa\"]:.2f}</b>',ps('tg',fontName='Helvetica-Bold',fontSize=10,textColor=NAVY,alignment=TA_CENTER)),\n        Paragraph(f'<font color=\"#{hx(GREEN)}\"><b>ALL CLEAR</b></font>',ps('ts',fontName='Helvetica-Bold',fontSize=8,alignment=TA_CENTER))])\ntt=Table(th,colWidths=[12*mm,34*mm,72*mm,25*mm,38*mm])\ntt.setStyle(TableStyle(TBL+[('ROWBACKGROUNDS',(0,1),(-1,-1),[colors.HexColor('#f1f8e9'),WHITE]),('ROWHEIGHT',(0,0),(-1,-1),16)]))\nstory.append(tt)\nstory.append(Spacer(1,10))\n\nstory.append(Paragraph('3. Priority Intervention List',ps('H3',fontName='Helvetica-Bold',fontSize=11,textColor=NAVY,spaceBefore=6,spaceAfter=5)))\nch=[['Priority','Reg. No.','Name','Arrears','Recommended Action']]\nfor s in ARR:\n    cnt=len(s.get('arrears',[]))\n    has_sa=any(a['grade'] in('SA','UA') for a in s.get('arrears',[]))\n    pri='HIGH' if cnt>=3 or has_sa else 'MEDIUM'\n    pc=RED if pri=='HIGH' else AMBER\n    rec=('Attendance regularisation + arrear coaching' if has_sa else\n         'Intensive remedial coaching \u2014 multiple subjects' if cnt>=3 else\n         'Targeted coaching for failed subject')\n    ch.append([\n        Paragraph(f'<font color=\"#{hx(pc)}\"><b>{pri}</b></font>',ps('pi',fontName='Helvetica-Bold',fontSize=8,alignment=TA_CENTER)),\n        s['regNo'],Paragraph(f'<b>{s[\"name\"]}</b>',ps('pn',fontName='Helvetica-Bold',fontSize=8)),\n        Paragraph(f'<font color=\"#{hx(RED)}\"><b>{cnt}</b></font>',ps('pa',fontName='Helvetica-Bold',fontSize=10,alignment=TA_CENTER)),\n        Paragraph(rec,ps('rc',fontName='Helvetica',fontSize=8))\n    ])\nct=Table(ch,colWidths=[18*mm,32*mm,48*mm,15*mm,72*mm])\nct.setStyle(TableStyle(TBL+[('ROWBACKGROUNDS',(0,1),(-1,-1),[WHITE,colors.HexColor('#fff8f8')]),\n    ('TOPPADDING',(0,1),(-1,-1),4),('BOTTOMPADDING',(0,1),(-1,-1),4)]))\nstory.append(ct)\nstory.append(HRFlowable(width='100%',thickness=0.5,color=AU_B,spaceBefore=12))\nstory.append(Paragraph(\n    f\"Auto-generated via n8n + Gemini 2.0 Flash  |  Institution: {INST.get('instName','')}  |  {INST.get('regulation','')} Regulation  |  All data extracted from uploaded PDF.\",\n    ps('fn',fontName='Helvetica-Oblique',fontSize=7,textColor=MGRAY,alignment=TA_CENTER,spaceBefore=4)))\ndoc.build(story)\nprint(json.dumps({'status':'ok','file':OUT}))\nPYEOF",
+        "env": {
+          "INST": "={{ JSON.stringify($json.INST) }}",
+          "STUDENTS": "={{ JSON.stringify($json.students) }}",
+          "ARR": "={{ JSON.stringify($json.arrearStudents) }}",
+          "STATS": "={{ JSON.stringify($json.statistics) }}",
+          "INSIGHT": "={{ $json.insightText }}",
+          "SEM_LABEL": "={{ $json.semLabel }}",
+          "OUT": "/tmp/05_Insights.pdf"
+        }
+      },
+      "id": "n20",
+      "name": "PDF 5 \u2014 AI Insights",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        700,
+        1320
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "waitForAll",
+        "output": "all"
+      },
+      "id": "n21",
+      "name": "Merge \u2014 Wait for All PDFs",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2.1,
+      "position": [
+        380,
+        1460
+      ],
+      "notes": "Connect the TRUE output of each IF node here (5 inputs). FALSE outputs are not connected \u2014 skipped PDFs won't block the merge."
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('Merge Insight Into Data').first().json;\n\nconst intentLabels = {\n  ALL:       'Full Result Analysis (all 5 reports)',\n  SCORECARD: 'Score Card & Rank List',\n  ARREAR:    'Arrear Analysis Report',\n  SUBJECT:   'Subject-wise Arrear Report',\n  STATS:     'Statistics & Pass/Fail Analysis',\n  INSIGHTS:  'AI Insights & Recommendations',\n};\nconst reportName = intentLabels[d.intent] || 'Result Analysis';\nconst semNote = d.semLabel !== 'All Semesters' ? ` \u2014 ${d.semLabel}` : '';\n\nconst pdfFiles = [];\nif (d.pdfsToRun.includes(1)) pdfFiles.push('1. Score Card & Rank List');\nif (d.pdfsToRun.includes(2)) pdfFiles.push('2. Arrear Analysis');\nif (d.pdfsToRun.includes(3)) pdfFiles.push('3. Subject-wise Arrear Report');\nif (d.pdfsToRun.includes(4)) pdfFiles.push('4. Statistics & Grade Distribution');\nif (d.pdfsToRun.includes(5)) pdfFiles.push('5. AI Insights & Recommendations');\n\nconst emailBody =\n  `Dear ${d.senderName},\\n\\n` +\n  `Please find attached: ${reportName}${semNote}\\n\\n` +\n  `Institution : ${d.INST.instName || ''}\\n` +\n  `Branch      : ${d.INST.branch || ''}\\n` +\n  `Semester    : ${d.semLabel}\\n` +\n  `Regulation  : ${d.INST.regulation || ''}\\n\\n` +\n  `Files attached:\\n${pdfFiles.join('\\n')}\\n\\n` +\n  `Generated via Result Analyser \u2014 n8n + Gemini 2.0 Flash.`;\n\nreturn [{ json: { ...d, emailBody } }];"
+      },
+      "id": "n22",
+      "name": "Build Reply Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        380,
+        1580
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "reply",
+        "messageId": "={{ $('Gmail Trigger').item.json.id }}",
+        "threadId": "={{ $('Gmail Trigger').item.json.threadId }}",
+        "to": "={{ $('Extract PDF Attachment').item.json.senderEmail }}",
+        "subject": "=Re: {{ $('Gmail Trigger').item.json.subject }}",
+        "message": "={{ $json.emailBody }}",
+        "attachmentsUi": {
+          "attachmentsBinary": [
+            {
+              "property": "pdf1"
+            },
+            {
+              "property": "pdf2"
+            },
+            {
+              "property": "pdf3"
+            },
+            {
+              "property": "pdf4"
+            },
+            {
+              "property": "pdf5"
+            }
+          ]
+        }
+      },
+      "id": "n23",
+      "name": "Gmail \u2014 Reply with PDFs",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        380,
+        1700
+      ],
+      "notes": "Replies in same email thread. Only attaches PDFs that were generated. Use same Gmail OAuth2 credential as the trigger."
+    }
+  ],
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract PDF Attachment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract PDF Attachment": {
+      "main": [
+        [
+          {
+            "node": "pdfplumber \u2014 Read PDF Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "pdfplumber \u2014 Read PDF Text": {
+      "main": [
+        [
+          {
+            "node": "Merge Text + Email Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Text + Email Metadata": {
+      "main": [
+        [
+          {
+            "node": "Gemini \u2014 Parse PDF to JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini \u2014 Parse PDF to JSON": {
+      "main": [
+        [
+          {
+            "node": "Detect Intent + Semester",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect Intent + Semester": {
+      "main": [
+        [
+          {
+            "node": "Structure Data + Semester Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structure Data + Semester Filter": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 Needs Insight?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 Needs Insight?": {
+      "main": [
+        [
+          {
+            "node": "Gemini \u2014 Generate Insight Text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Insight Into Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini \u2014 Generate Insight Text": {
+      "main": [
+        [
+          {
+            "node": "Merge Insight Into Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Insight Into Data": {
+      "main": [
+        [
+          {
+            "node": "IF \u2014 Generate PDF 1?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "IF \u2014 Generate PDF 2?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "IF \u2014 Generate PDF 3?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "IF \u2014 Generate PDF 4?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "IF \u2014 Generate PDF 5?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF \u2014 Generate PDF 1?": {
+      "main": [
+        [
+          {
+            "node": "PDF 1 \u2014 Score Card + Rank List",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "IF \u2014 Generate PDF 2?": {
+      "main": [
+        [
+          {
+            "node": "PDF 2 \u2014 Arrear Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "IF \u2014 Generate PDF 3?": {
+      "main": [
+        [
+          {
+            "node": "PDF 3 \u2014 Subject-wise Arrear",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "IF \u2014 Generate PDF 4?": {
+      "main": [
+        [
+          {
+            "node": "PDF 4 \u2014 Statistics",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "IF \u2014 Generate PDF 5?": {
+      "main": [
+        [
+          {
+            "node": "PDF 5 \u2014 AI Insights",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "PDF 1 \u2014 Score Card + Rank List": {
+      "main": [
+        [
+          {
+            "node": "Merge \u2014 Wait for All PDFs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PDF 2 \u2014 Arrear Analysis": {
+      "main": [
+        [
+          {
+            "node": "Merge \u2014 Wait for All PDFs",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "PDF 3 \u2014 Subject-wise Arrear": {
+      "main": [
+        [
+          {
+            "node": "Merge \u2014 Wait for All PDFs",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "PDF 4 \u2014 Statistics": {
+      "main": [
+        [
+          {
+            "node": "Merge \u2014 Wait for All PDFs",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "PDF 5 \u2014 AI Insights": {
+      "main": [
+        [
+          {
+            "node": "Merge \u2014 Wait for All PDFs",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "Merge \u2014 Wait for All PDFs": {
+      "main": [
+        [
+          {
+            "node": "Build Reply Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Reply Message": {
+      "main": [
+        [
+          {
+            "node": "Gmail \u2014 Reply with PDFs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "instanceId": "result-analyser",
+    "templateCredsSetupCompleted": false
+  },
+  "_SETUP_GUIDE": {
+    "step_1_server": "pip install pdfplumber reportlab  (on your n8n server)",
+    "step_2_gemini": "Get free key \u2192 https://aistudio.google.com/app/apikey  |  n8n Settings > Environment Variables > GEMINI_API_KEY=your_key",
+    "step_3_gmail": "n8n Credentials > Add Gmail OAuth2 credential > connect to both Gmail Trigger + Gmail Reply nodes",
+    "step_4_import": "n8n > Settings > Import Workflow > upload this JSON file",
+    "step_5_use": "Email yourself the AU result PDF. Subject = your command (see examples below)",
+    "email_commands": {
+      "all_5_pdfs": "do result analysis",
+      "arrear_only": "arrear analysis",
+      "subject_wise": "subject wise",
+      "statistics": "statistics",
+      "score_card": "score card",
+      "insights": "insights",
+      "sem3_arrear": "sem 3 arrear analysis",
+      "sem5_full": "sem 5 full analysis",
+      "sem2_stats": "semester 2 statistics",
+      "sem4_subject_wise": "sem 4 subject wise"
+    },
+    "zero_hardcoded_text": "Institution name, address, branch, regulation \u2014 all extracted from the PDF by Gemini. Nothing is hardcoded in any node."
+  },
+  "_PROJECT": {
+    "name": "ResultAnalyser",
+    "repo": "https://github.com/Drdhx/ResultAnalyser",
+    "creator": "Dhanush D",
+    "github": "Drdhx",
+    "version": "1.0.0",
+    "description": "AI-powered university result analysis \u2014 triggered by Gmail, built on n8n + Gemini 2.0 Flash",
+    "tagline": "Email a result PDF. Get 5 analysis reports in 60 seconds."
+  }
+}
